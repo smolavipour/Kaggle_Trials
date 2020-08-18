@@ -17,6 +17,8 @@ from keras.utils import to_categorical
 
 import tensorflow as tf
 
+from sklearn.model_selection import KFold
+
 def read_data():
     Train = pd.read_csv('train.csv')
     Test = pd.read_csv('test.csv')
@@ -24,6 +26,7 @@ def read_data():
     return Train, Test, G_data
 
 def polish_data(Data):
+    #print(Data.isnull().sum())
     #Remove the names
     Data= Data.drop(columns=['Name'])
     
@@ -39,33 +42,19 @@ def polish_data(Data):
     Data = Data.drop(columns=['Ticket'])
     
     
-    #print('Percentage of null Cabin values', Data['Cabin'].isnull().sum(axis = 0)/len(Data['Cabin']))
-    #print('Will remove this collumn then because of high rate')
     #Remove Cabin
     Data = Data.drop(columns=['Cabin'])    
     
-    #print('Percentage of null age values', Data['Age'].isnull().sum(axis = 0)/len(Data['Age']))
-    imp = SimpleImputer(missing_values=np.nan, strategy='mean')
-    #print(Data['Age'][0:20])
-    imp.fit(Data['Age'].values.reshape((len(Data['Age']),1)))
-    
-    Data['Age']=imp.transform(Data['Age'].values.reshape((len(Data['Age']),1)))
-    #print(Data['Age'][0:20])
-    #print('We need to replace NaN values')
-    
+
+    Data['Age'].fillna(Data['Age'].mean(), inplace = True)
+    Data['Fare'].fillna(Data['Fare'].median(), inplace = True)
+    Data['Embarked'].fillna(Data['Embarked'].mode()[0], inplace = True)
     
     #Handle Emabark
-    #Null problem
-    #print(Train['Embarked'].head())
-    #print('S  Q  C: ',np.sum(Data['Embarked'].eq('S'))/len(Data['Embarked']),
-    #      np.sum(Data['Embarked'].eq('Q'))/len(Data['Embarked']),
-    #      np.sum(Data['Embarked'].eq('C'))/len(Data['Embarked']))
-    Data['Embarked'][Data['Embarked'].isnull()]='S'    
     #Change labels to numbers
     Data['Embarked']=pd.Categorical(Data['Embarked'])
     Data['Embarked']=Data.Embarked.cat.codes
     Data['Embarked']=Data['Embarked']-1
-    #print(Train['Embarked'].head())    
     
     return Data
     
@@ -81,15 +70,68 @@ Y_train = to_categorical(Y_train, 2)
 X_test=test[test.keys()[1:-1]]
 id_test=test['PassengerId']
 
-#print(X_train.head())
-#print(X_test.head())
-
 Feature_Size=len(X_train.keys())
+
+
+#Model Hyperparams
+#params
+
+Model_pool=pd.DataFrame([(30,30,64),
+                         (40,40,128),
+                         (50,100,256),
+                         (80,100,256),
+                         (50,100,512),
+                         (50,200,256),
+                         (80,80,256),],
+                        columns=['Epochs','Batch_Size','Hidden_Size'])
+
+num_models=len(Model_pool)
+
+# Define the K-fold Cross Validator
+num_folds=5
+kfold = KFold(n_splits=num_folds, shuffle=True)
+
+Mean_acc=[]
+for i in range(num_models): 
+    print('Model #',i)
+    Epoch=Model_pool['Epochs'][i]
+    B_Size=Model_pool['Batch_Size'][i]
+    HiddenSize=Model_pool['Hidden_Size'][i]
+    model_acc=[]
+    
+    for ind_train, ind_eval in kfold.split(X_train, Y_train):        
+        # Create the model
+        model = Sequential()
+        model.add(Dense(HiddenSize, input_shape=(Feature_Size,), activation='relu'))
+        model.add(keras.layers.Dropout(0.2))
+        model.add(Dense(2, activation='softmax'))
+        
+        
+        ss=preprocessing.StandardScaler()
+        X_train=ss.fit_transform(X_train)
+        #X_test=ss.transform(X_test)   
+        
+        #Data_train=tf.data.Dataset.from_tensor_slices((X_train.values, Y_train.values))
+        
+        
+        # Configure the model and start training
+        model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+        model.fit(X_train[ind_train], Y_train[ind_train], epochs=Epoch, batch_size=B_Size, verbose=0)
+        # loss, accuracy
+        scores = model.evaluate(X_train[ind_eval], Y_train[ind_eval], verbose=0)
+        model_acc.append(scores)
+    Mean_acc.append(np.mean(model_acc,axis=0)[1])
+    print(Mean_acc[-1],'\n'*2)
+
+Best_model=np.argmax(Mean_acc)    
+Epoch=Model_pool['Epochs'][Best_model]
+B_Size=Model_pool['Batch_Size'][Best_model]
+HiddenSize=Model_pool['Hidden_Size'][Best_model]
 
 # Create the model
 model = Sequential()
-model.add(Dense(256, input_shape=(Feature_Size,), activation='relu'))
-model.add(Dense(64, activation='relu'))
+model.add(Dense(HiddenSize, input_shape=(Feature_Size,), activation='relu'))
+model.add(keras.layers.Dropout(0.2))
 model.add(Dense(2, activation='softmax'))
 
 
@@ -99,10 +141,13 @@ X_test=ss.transform(X_test)
 
 #Data_train=tf.data.Dataset.from_tensor_slices((X_train.values, Y_train.values))
 
+
 # Configure the model and start training
 model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
-model.fit(X_train, Y_train, epochs=50, batch_size=200, verbose=1, validation_split=0.2)
+model.fit(X_train, Y_train, epochs=Epoch, batch_size=B_Size, verbose=1)
+
+
 out=model.predict(X_test)
 out=np.argmax(out,axis=1)
 d={'PassengerId':id_test,'Survived':out}
-pd.DataFrame(d).to_csv('out.csv')
+pd.DataFrame(d).to_csv('out.csv',index=None)
