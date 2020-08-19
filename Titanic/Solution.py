@@ -14,6 +14,7 @@ import keras
 from keras.models import Sequential
 from keras.layers import Dense
 from keras.utils import to_categorical
+from keras.callbacks import EarlyStopping
 
 import tensorflow as tf
 
@@ -49,12 +50,14 @@ def polish_data(Data):
     Data['Age'].fillna(Data['Age'].mean(), inplace = True)
     Data['Fare'].fillna(Data['Fare'].median(), inplace = True)
     Data['Embarked'].fillna(Data['Embarked'].mode()[0], inplace = True)
+
     
     #Handle Emabark
     #Change labels to numbers
     Data['Embarked']=pd.Categorical(Data['Embarked'])
     Data['Embarked']=Data.Embarked.cat.codes
     Data['Embarked']=Data['Embarked']-1
+
     
     return Data
     
@@ -72,18 +75,20 @@ id_test=test['PassengerId']
 
 Feature_Size=len(X_train.keys())
 
+ss=preprocessing.StandardScaler()
+X_train=ss.fit_transform(X_train)
+X_test=ss.transform(X_test)   
+
 
 #Model Hyperparams
 #params
 
-Model_pool=pd.DataFrame([(30,30,64),
-                         (40,40,128),
-                         (50,100,256),
-                         (80,100,256),
-                         (50,100,512),
-                         (50,200,256),
-                         (80,80,256),],
-                        columns=['Epochs','Batch_Size','Hidden_Size'])
+Model_pool=pd.DataFrame([(0.01,200,256),
+                         (0.001,150,256),
+                         (0.005,200,64),
+                         (0.001,100,64),
+                         (0.001,100,128)],
+                        columns=['LR','Batch_Size','Hidden_Size'])
 
 num_models=len(Model_pool)
 
@@ -91,10 +96,12 @@ num_models=len(Model_pool)
 num_folds=5
 kfold = KFold(n_splits=num_folds, shuffle=True)
 
+Epoch=100
+
 Mean_acc=[]
 for i in range(num_models): 
     print('Model #',i)
-    Epoch=Model_pool['Epochs'][i]
+    LR=Model_pool['LR'][i]
     B_Size=Model_pool['Batch_Size'][i]
     HiddenSize=Model_pool['Hidden_Size'][i]
     model_acc=[]
@@ -103,20 +110,36 @@ for i in range(num_models):
         # Create the model
         model = Sequential()
         model.add(Dense(HiddenSize, input_shape=(Feature_Size,), activation='relu'))
+        #model.add(Dense(HiddenSize, input_shape=(Feature_Size,), activation='relu'))
         model.add(keras.layers.Dropout(0.2))
         model.add(Dense(2, activation='softmax'))
         
         
-        ss=preprocessing.StandardScaler()
-        X_train=ss.fit_transform(X_train)
+
         #X_test=ss.transform(X_test)   
         
         #Data_train=tf.data.Dataset.from_tensor_slices((X_train.values, Y_train.values))
         
+        # simple early stopping
+        #es = EarlyStopping(monitor='val_loss', mode='min', verbose=0, patience=50)
         
+        #Optimizer
+        opt=keras.optimizers.Adam(learning_rate=LR)
+        w0=sum(np.where(Y_train[ind_train]==[1,0])[1])/len(Y_train[ind_train])
+        w1=1-w0
+        class_weights={0:w0, 1:w1}
+        print('weights:',w0,' - ',w1)
         # Configure the model and start training
-        model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
-        model.fit(X_train[ind_train], Y_train[ind_train], epochs=Epoch, batch_size=B_Size, verbose=0)
+        model.compile(loss='categorical_crossentropy', optimizer=opt, metrics=['accuracy'])
+        model.fit(X_train[ind_train],
+                  Y_train[ind_train],
+                  epochs=Epoch,
+                  validation_data=(X_train[ind_eval], Y_train[ind_eval]),
+                  batch_size=B_Size,
+                  verbose=0,
+                  class_weight=class_weights
+                  #callbacks=[es]
+                  )
         # loss, accuracy
         scores = model.evaluate(X_train[ind_eval], Y_train[ind_eval], verbose=0)
         model_acc.append(scores)
@@ -124,7 +147,7 @@ for i in range(num_models):
     print(Mean_acc[-1],'\n'*2)
 
 Best_model=np.argmax(Mean_acc)    
-Epoch=Model_pool['Epochs'][Best_model]
+LR=Model_pool['LR'][Best_model]
 B_Size=Model_pool['Batch_Size'][Best_model]
 HiddenSize=Model_pool['Hidden_Size'][Best_model]
 
@@ -135,19 +158,27 @@ model.add(keras.layers.Dropout(0.2))
 model.add(Dense(2, activation='softmax'))
 
 
-ss=preprocessing.StandardScaler()
-X_train=ss.fit_transform(X_train)
-X_test=ss.transform(X_test)   
-
 #Data_train=tf.data.Dataset.from_tensor_slices((X_train.values, Y_train.values))
+
+#Optimizer
+opt=keras.optimizers.Adam(learning_rate=LR)
+
+# simple early stopping
+#es = EarlyStopping(monitor='loss', mode='min', verbose=0, patience=30)
+
+w0=sum(np.where(Y_train==[1,0])[1])/len(Y_train)
+w1=1-w0
+class_weights={0:w0, 1:w1}
+print('weights:',w0,' - ',w1)
 
 
 # Configure the model and start training
-model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
-model.fit(X_train, Y_train, epochs=Epoch, batch_size=B_Size, verbose=1)
+model.compile(loss='categorical_crossentropy', optimizer=opt, metrics=['accuracy'])
+model.fit(X_train, Y_train, epochs=Epoch, batch_size=B_Size, verbose=1,class_weight=class_weights)
 
 
 out=model.predict(X_test)
 out=np.argmax(out,axis=1)
 d={'PassengerId':id_test,'Survived':out}
 pd.DataFrame(d).to_csv('out.csv',index=None)
+print(out)
